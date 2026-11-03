@@ -1,0 +1,504 @@
+---
+title: "International Electronics Retailer Dashboard"
+format:
+  dashboard:
+    scrolling: true
+    theme: cosmo
+    include-in-header: header_qmd.html
+params:
+  data_path: "International_Electronics_Retailer_2.xlsx"
+  dict_path: "Data_Dictionary.xlsx"
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r}
+#| include: false
+# ---------------------------------------------------------------
+# Packages: flexdashboard, readxl, dplyr, tidyr, lubridate, plotly, DT, scales
+# install.packages(c("flexdashboard","readxl","dplyr","tidyr",
+#                    "lubridate","plotly","DT","scales","quarto"))
+# Run: click Render in RStudio, or quarto::quarto_render("electronics_dashboard_en.qmd")
+# ---------------------------------------------------------------
+library(flexdashboard)
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(plotly)
+library(DT)
+library(scales)
+
+# ---- Colors (blue as the main hue; series colors in a fixed order) ----
+BLUE   <- "#2a78d6"; ORANGE <- "#eb6834"; AQUA <- "#1baf7a"
+INK2   <- "#52514e"; GRID <- "#ebeae6"
+FONT   <- "'Noto Sans TC', 'PingFang TC', 'Microsoft JhengHei', sans-serif"
+SEQ    <- c("#cde2fb", "#86b6ef", "#3987e5", "#256abf", "#104281")
+
+# ---- Load and clean the data ----
+raw <- read_excel(params$data_path)
+names(raw) <- c("order_no","line_item","order_date","delivery_date","customer",
+                "store","product","qty","currency","gender","name","city",
+                "state_code","cust_state","zip","cust_country","continent",
+                "birthday","store_country","store_state","sqm","open_date",
+                "product_name","brand","color","unit_cost","unit_price",
+                "subcat_key","subcategory","cat_key","category","exchange",
+                "unit_price_local")
+
+# Some text in the source file has unreadable characters (U+FFFD); replace them with "?"
+raw <- raw %>% mutate(across(where(is.character), ~ gsub("\uFFFD", "?", .x, fixed = TRUE)))
+
+# ---- **Data repair**: in 595 rows a corrupted character in the name shifted customer fields one column right ----
+# Signs: Customer Country holds a continent (North America / Europe), Birthday is blank,
+# and the birthday text sits in Continent. Shift the fields back to the left.
+shifted <- raw$cust_country %in% c("North America", "Europe")
+n_shifted <- sum(shifted); n_shift_cust <- n_distinct(raw$customer[shifted])
+raw <- raw %>% mutate(
+  birthday     = if_else(shifted, as.POSIXct(mdy(continent)), birthday),
+  continent    = if_else(shifted, cust_country, continent),
+  cust_country = if_else(shifted, zip, cust_country),
+  zip          = if_else(shifted, cust_state, zip),
+  cust_state   = if_else(shifted, state_code, cust_state),
+  state_code   = if_else(shifted, city, state_code),
+  city         = if_else(shifted, NA_character_, city))
+
+# Display labels
+cat_lbl <- c("Computers" = "Computers", "Cell phones" = "Cell Phones",
+            "Music, Movies and Audio Books" = "Music, Movies & Audio Books",
+            "Audio" = "Audio", "Games and Toys" = "Games & Toys",
+            "Home Appliances" = "Home Appliances",
+            "Cameras and camcorders" = "Cameras & Camcorders",
+            "TV and Video" = "TV & Video")
+ctry_lbl <- c("United States" = "United States", "Online" = "Online Store",
+             "United Kingdom" = "United Kingdom", "Germany" = "Germany",
+             "Canada" = "Canada", "Australia" = "Australia",
+             "Italy" = "Italy", "Netherlands" = "Netherlands",
+             "France" = "France")
+CH_ON <- "Online"; CH_ST <- "In-store"
+
+d <- raw %>%
+  mutate(order_date    = as.Date(order_date),
+         delivery_date = as.Date(delivery_date),
+         birthday      = as.Date(birthday),
+         revenue  = qty * unit_price,          # Revenue (USD)
+         cost     = qty * unit_cost,           # Cost (USD)
+         profit   = revenue - cost,            # Gross profit (USD)
+         year     = year(order_date),
+         month    = floor_date(order_date, "month"),
+         age      = floor(time_length(interval(birthday, order_date), "years")),
+         age_grp  = cut(age, c(0, 25, 35, 45, 55, 65, 75, 120), right = FALSE,
+                        labels = c("<25", "25–34", "35–44", "45–54", "55–64", "65–74", "75+")),
+         channel  = if_else(store_country == "Online", CH_ON, CH_ST),
+         cat_lbl   = recode(category, !!!cat_lbl),
+         store_ctry_lbl = recode(store_country, !!!ctry_lbl),
+         cust_ctry_lbl  = recode(cust_country, !!!ctry_lbl),
+         gender_lbl = recode(gender, Male = "Male", Female = "Female"),
+         ship_days = as.numeric(delivery_date - order_date))
+
+last_day   <- max(d$order_date)
+full_years <- d %>% filter(year < year(last_day))
+last_full  <- max(full_years$year)
+
+# ---- Shared formatting ----
+usd_m <- function(x) paste0("$", formatC(x / 1e6, format = "f", digits = 2), "M")
+usd   <- function(x) dollar(x, accuracy = 1)
+pct   <- function(x, d = 1) percent(x, accuracy = 10^-d)
+
+style <- function(p, x = "", y = "", yfmt = NULL, xfmt = NULL, legend = FALSE) {
+  p %>% layout(
+    font = list(family = FONT, color = INK2, size = 12),
+    paper_bgcolor = "rgba(0,0,0,0)", plot_bgcolor = "rgba(0,0,0,0)",
+    xaxis = list(title = x, gridcolor = GRID, zeroline = FALSE, tickformat = xfmt,
+                 automargin = TRUE),
+    yaxis = list(title = y, gridcolor = GRID, zeroline = FALSE, tickformat = yfmt,
+                 automargin = TRUE),
+    showlegend = legend,
+    legend = list(orientation = "h", x = 0, y = 1.12),
+    margin = list(l = 8, r = 16, t = 8, b = 8),
+    hoverlabel = list(font = list(family = FONT)),
+    bargap = 0.35
+  ) %>% config(displayModeBar = FALSE)
+}
+
+hbar <- function(df, cat, val, text, color = BLUE, xfmt = "$~s") {
+  # cat / val are column names (strings); sort ascending so the largest bar is on top
+  df <- df[order(df[[val]]), ]
+  df$.y <- factor(df[[cat]], levels = df[[cat]])
+  df$.x <- df[[val]]
+  plot_ly(df, y = ~.y, x = ~.x, type = "bar", orientation = "h", text = text,
+          hovertemplate = "%{text}<extra></extra>", textposition = "none",
+          marker = list(color = color)) %>%
+    style(xfmt = xfmt)
+}
+
+# ---- Headline metrics ----
+tot_rev    <- sum(d$revenue)
+tot_profit <- sum(d$profit)
+n_orders   <- n_distinct(d$order_no)
+n_cust     <- n_distinct(d$customer)
+yr <- full_years %>% group_by(year) %>%
+  summarise(revenue = sum(revenue), profit = sum(profit),
+            orders = n_distinct(order_no), .groups = "drop") %>%
+  mutate(yoy = revenue / lag(revenue) - 1)
+peak <- yr %>% slice_max(revenue, n = 1)
+cat_tot   <- d %>% count(cat_lbl, wt = revenue) %>% mutate(s = n / sum(n))
+top_cat   <- cat_tot$cat_lbl[which.max(cat_tot$n)]
+top_share <- max(cat_tot$s)
+online_share <- sum(d$revenue[d$channel == CH_ON]) / tot_rev
+```
+
+# Overview
+
+## Row {height=150px}
+
+```{r}
+#| content: valuebox
+#| title: "Total Revenue (USD)"
+list(icon = "currency-dollar", color = "light", value = usd_m(tot_rev))
+```
+
+```{r}
+#| content: valuebox
+#| title: "Gross Profit"
+list(icon = "coin", color = "light", value = usd_m(tot_profit))
+```
+
+```{r}
+#| content: valuebox
+#| title: "Gross Margin"
+list(icon = "percent", color = "light", value = pct(tot_profit / tot_rev))
+```
+
+```{r}
+#| content: valuebox
+#| title: "Orders"
+list(icon = "receipt", color = "light", value = comma(n_orders))
+```
+
+```{r}
+#| content: valuebox
+#| title: "Customers"
+list(icon = "people", color = "light", value = comma(n_cust))
+```
+
+```{r}
+#| content: valuebox
+#| title: "Avg. Order Value"
+list(icon = "cart", color = "light", value = usd(tot_rev / n_orders))
+```
+
+## Row {height=460px}
+
+### Column {width=60%}
+
+```{r}
+#| title: "Monthly Revenue & Gross Profit (USD)"
+m <- d %>% filter(month < floor_date(last_day, "month")) %>%   # drop the partial last month
+  group_by(month) %>%
+  summarise(revenue = sum(revenue), profit = sum(profit), .groups = "drop")
+plot_ly(m, x = ~month) %>%
+  add_lines(y = ~revenue, name = "Revenue", line = list(color = BLUE, width = 2),
+            hovertemplate = "%{x|%Y-%m}<br>Revenue %{y:$,.0f}<extra></extra>") %>%
+  add_lines(y = ~profit, name = "Gross Profit", line = list(color = ORANGE, width = 2),
+            hovertemplate = "%{x|%Y-%m}<br>Gross Profit %{y:$,.0f}<extra></extra>") %>%
+  style(yfmt = "$~s", legend = TRUE) %>%
+  layout(hovermode = "x unified", xaxis = list(tickformat = "%Y"))
+```
+
+### Column {width=40%}
+
+::: {.card title="Key Insights"}
+<div class="insight">
+
+- **`r peak$year` was the peak year**: revenue of `r usd_m(peak$revenue)`, up `r pct(peak$yoy)` year over year.
+- **`r last_full` revenue fell `r pct(-yr$yoy[yr$year == last_full])`** to `r usd_m(yr$revenue[yr$year == last_full])`, the only full year of decline.
+- Overall gross margin is **`r pct(tot_profit / tot_rev)`**; the largest category is **`r top_cat`** at `r pct(top_share)` of revenue.
+- **Online** accounts for **`r pct(online_share)`** of revenue; among physical stores, the United States contributes the most.
+- Data covers `r format(min(d$order_date))` to `r format(last_day)`; the partial month `r format(last_day, "%Y-%m")` is excluded from the trend chart.
+
+</div>
+:::
+
+## Row {height=400px}
+
+```{r}
+#| title: "Annual Revenue (Full Years)"
+plot_ly(yr, x = ~factor(year), y = ~revenue, type = "bar",
+        marker = list(color = BLUE),
+        text = ~usd_m(revenue), textposition = "outside",
+        textfont = list(size = 11, color = INK2), cliponaxis = FALSE,
+        hovertext = ~paste0(year, "<br>Revenue ", usd_m(revenue),
+                            ifelse(is.na(yoy), "", paste0("<br>YoY ", pct(yoy)))),
+        hovertemplate = "%{hovertext}<extra></extra>") %>%
+  style(yfmt = "$~s")
+```
+
+```{r}
+#| title: "Revenue by Category"
+cat_s <- d %>% group_by(cat_lbl) %>%
+  summarise(revenue = sum(revenue), profit = sum(profit), .groups = "drop") %>%
+  mutate(margin = profit / revenue, share = revenue / sum(revenue))
+hbar(cat_s, "cat_lbl", "revenue",
+     text = ~paste0(cat_lbl, "<br>Revenue ", usd_m(revenue), " (", pct(share), ")",
+                    "<br>Margin ", pct(margin)))
+```
+
+# Products
+
+## Row {height=440px}
+
+```{r}
+#| title: "Revenue Heatmap: Category × Year (USD)"
+hm <- full_years %>% group_by(cat_lbl, year) %>%
+  summarise(revenue = sum(revenue), .groups = "drop")
+ord <- hm %>% count(cat_lbl, wt = revenue) %>% arrange(n) %>% pull(cat_lbl)
+plot_ly(hm, x = ~factor(year), y = ~factor(cat_lbl, levels = ord), z = ~revenue,
+        type = "heatmap", colors = SEQ, xgap = 2, ygap = 2,
+        text = ~paste0(cat_lbl, " · ", year, "<br>Revenue ", usd_m(revenue)),
+        hovertemplate = "%{text}<extra></extra>",
+        colorbar = list(title = "", tickformat = "$~s", thickness = 10)) %>%
+  style()
+```
+
+```{r}
+#| title: "Top 10 Products by Revenue"
+top_p <- d %>% group_by(product_name, cat_lbl) %>%
+  summarise(revenue = sum(revenue), qty = sum(qty), profit = sum(profit),
+            .groups = "drop") %>%
+  slice_max(revenue, n = 10)
+hbar(top_p, "product_name", "revenue",
+     text = ~paste0(product_name, "<br>", cat_lbl, "<br>Revenue ", usd(revenue),
+                    "<br>Units ", comma(qty), "<br>Margin ", pct(profit / revenue)))
+```
+
+## Row {height=440px}
+
+```{r}
+#| title: "Revenue & Margin by Brand"
+br <- d %>% group_by(brand) %>%
+  summarise(revenue = sum(revenue), profit = sum(profit), .groups = "drop") %>%
+  mutate(margin = profit / revenue)
+hbar(br, "brand", "revenue",
+     text = ~paste0(brand, "<br>Revenue ", usd_m(revenue), "<br>Margin ", pct(margin)))
+```
+
+## Row {height=560px}
+
+```{r}
+#| title: "Subcategory Detail"
+d %>% group_by(cat_lbl, subcategory) %>%
+  summarise(revenue = sum(revenue), profit = sum(profit), qty = sum(qty),
+            .groups = "drop") %>%
+  mutate(margin = profit / revenue) %>% arrange(desc(revenue)) %>%
+  datatable(rownames = FALSE, fillContainer = TRUE,
+            colnames = c("Category", "Subcategory", "Revenue",
+                         "Gross Profit", "Units", "Margin"),
+            options = list(pageLength = 10, dom = "ftp", scrollX = TRUE)) %>%
+  formatCurrency(c("revenue", "profit"), digits = 0) %>%
+  formatRound("qty", digits = 0) %>%
+  formatPercentage("margin", digits = 1)
+```
+
+# Markets & Channels
+
+## Row {height=440px}
+
+```{r}
+#| title: "Revenue by Store Country"
+sc <- d %>% group_by(store_ctry_lbl) %>%
+  summarise(revenue = sum(revenue), orders = n_distinct(order_no),
+            stores = n_distinct(store), .groups = "drop") %>%
+  mutate(share = revenue / sum(revenue))
+hbar(sc, "store_ctry_lbl", "revenue",
+     text = ~paste0(store_ctry_lbl, "<br>Revenue ", usd_m(revenue), " (", pct(share), ")",
+                    "<br>Orders ", comma(orders), "<br>Stores ", stores))
+```
+
+```{r}
+#| title: "Online vs. In-store Revenue Share"
+ch <- full_years %>% group_by(year, channel) %>%
+  summarise(revenue = sum(revenue), .groups = "drop") %>%
+  group_by(year) %>% mutate(share = revenue / sum(revenue)) %>% ungroup()
+plot_ly(ch, x = ~factor(year), y = ~share, color = ~channel,
+        colors = setNames(c(ORANGE, BLUE), c(CH_ON, CH_ST)), type = "scatter",
+        mode = "lines+markers", line = list(width = 2), marker = list(size = 8),
+        text = ~paste0(year, " · ", channel, "<br>Share ", pct(share),
+                       "<br>Revenue ", usd_m(revenue)),
+        hovertemplate = "%{text}<extra></extra>") %>%
+  style(yfmt = ".0%", legend = TRUE) %>%
+  layout(yaxis = list(range = c(0, 1)))
+```
+
+## Row {height=480px}
+
+```{r}
+#| title: "Top 15 Stores by Revenue per m²"
+st <- d %>% filter(channel == CH_ST) %>%
+  group_by(store, store_ctry_lbl, store_state, sqm) %>%
+  summarise(revenue = sum(revenue), .groups = "drop") %>%
+  mutate(per_sqm = revenue / sqm,
+         label = paste0(store_state, " (", store_ctry_lbl, ") #", store)) %>%
+  slice_max(per_sqm, n = 15)
+hbar(st, "label", "per_sqm", xfmt = "$,.0f",
+     text = ~paste0(label, "<br>Revenue per m² ", usd(per_sqm),
+                    "<br>Revenue ", usd(revenue), "<br>Area ", comma(sqm), " m²"))
+```
+
+```{r}
+#| title: "Store Revenue vs. Floor Area"
+st_all <- d %>% filter(channel == CH_ST) %>%
+  group_by(store, store_ctry_lbl, store_state, sqm) %>%
+  summarise(revenue = sum(revenue), .groups = "drop")
+plot_ly(st_all, x = ~sqm, y = ~revenue, type = "scatter", mode = "markers",
+        marker = list(color = BLUE, size = 10, opacity = 0.8,
+                      line = list(color = "#fcfcfb", width = 2)),
+        text = ~paste0(store_state, " (", store_ctry_lbl, ") #", store,
+                       "<br>Area ", comma(sqm), " m²<br>Revenue ", usd(revenue)),
+        hovertemplate = "%{text}<extra></extra>") %>%
+  style(x = "Floor Area (m²)", y = "Revenue", yfmt = "$~s")
+```
+
+# Customers
+
+## Row {height=420px}
+
+```{r}
+#| title: "Revenue by Age Group"
+ag <- d %>% filter(!is.na(age_grp)) %>% group_by(age_grp) %>%
+  summarise(revenue = sum(revenue), cust = n_distinct(customer), .groups = "drop")
+plot_ly(ag, x = ~age_grp, y = ~revenue, type = "bar", marker = list(color = BLUE),
+        text = ~paste0(age_grp, " yrs<br>Revenue ", usd_m(revenue), "<br>Customers ", comma(cust)),
+        hovertemplate = "%{text}<extra></extra>", textposition = "none") %>%
+  style(x = "Age (at order)", yfmt = "$~s")
+```
+
+```{r}
+#| title: "Spend per Customer by Gender"
+gd <- d %>% group_by(gender_lbl) %>%
+  summarise(revenue = sum(revenue), cust = n_distinct(customer), .groups = "drop") %>%
+  mutate(per_cust = revenue / cust, share = revenue / sum(revenue))
+plot_ly(gd, x = ~gender_lbl, y = ~per_cust, type = "bar", marker = list(color = BLUE),
+        text = ~paste0(usd(per_cust), " | Share ", pct(share)), textposition = "outside",
+        textfont = list(size = 11, color = INK2), cliponaxis = FALSE,
+        hovertext = ~paste0(gender_lbl, "<br>Customers ", comma(cust), "<br>Revenue Share ", pct(share),
+                            "<br>Spend/Customer ", usd(per_cust)),
+        hovertemplate = "%{hovertext}<extra></extra>") %>%
+  style(y = "Spend per Customer (USD)", yfmt = "$,.0f")
+```
+
+```{r}
+#| title: "Purchase Frequency"
+fq <- d %>% group_by(customer) %>% summarise(n = n_distinct(order_no)) %>%
+  mutate(bucket = factor(pmin(n, 5), labels = c("1×", "2×", "3×", "4×", "5+"))) %>%
+  count(bucket) %>% mutate(share = n / sum(n))
+plot_ly(fq, x = ~bucket, y = ~share, type = "bar", marker = list(color = BLUE),
+        text = ~paste0(bucket, "<br>Customers ", comma(n), " (", pct(share), ")"),
+        hovertemplate = "%{text}<extra></extra>", textposition = "none") %>%
+  style(x = "Orders per Customer", y = "Share of Customers", yfmt = ".0%")
+```
+
+## Row {height=420px}
+
+```{r}
+#| title: "Revenue by Customer Country"
+cc <- d %>% group_by(cust_ctry_lbl) %>%
+  summarise(revenue = sum(revenue), cust = n_distinct(customer), .groups = "drop") %>%
+  mutate(per_cust = revenue / cust)
+hbar(cc, "cust_ctry_lbl", "revenue",
+     text = ~paste0(cust_ctry_lbl, "<br>Revenue ", usd_m(revenue), "<br>Customers ", comma(cust),
+                    "<br>Spend/Customer ", usd(per_cust)))
+```
+
+```{r}
+#| title: "Spend per Customer by Country (USD)"
+hbar(cc, "cust_ctry_lbl", "per_cust", xfmt = "$,.0f",
+     text = ~paste0(cust_ctry_lbl, "<br>Spend/Customer ", usd(per_cust)))
+```
+
+# Delivery (Online)
+
+```{r}
+#| include: false
+on <- d %>% filter(!is.na(ship_days)) %>% distinct(order_no, .keep_all = TRUE)
+```
+
+## Row {height=150px}
+
+```{r}
+#| content: valuebox
+#| title: "Avg. Delivery Time"
+list(icon = "truck", color = "light", value = paste0(round(mean(on$ship_days), 1), " days"))
+```
+
+```{r}
+#| content: valuebox
+#| title: "Median Delivery Time"
+list(icon = "clock", color = "light", value = paste0(median(on$ship_days), " days"))
+```
+
+```{r}
+#| content: valuebox
+#| title: "Delivered Within 7 Days"
+list(icon = "check-circle", color = "light", value = pct(mean(on$ship_days <= 7)))
+```
+
+## Row {height=420px}
+
+```{r}
+#| title: "Avg. Delivery Days by Year"
+sy <- on %>% filter(year < year(last_day)) %>% group_by(year) %>%
+  summarise(days = mean(ship_days), n = n(), .groups = "drop")
+plot_ly(sy, x = ~factor(year), y = ~days, type = "scatter", mode = "lines+markers",
+        line = list(color = BLUE, width = 2), marker = list(color = BLUE, size = 8),
+        text = ~paste0(year, "<br>Avg. ", round(days, 1), " days<br>Orders ", comma(n)),
+        hovertemplate = "%{text}<extra></extra>") %>%
+  style(y = "Days", yfmt = ".1f") %>% layout(yaxis = list(rangemode = "tozero"))
+```
+
+```{r}
+#| title: "Delivery Time Distribution"
+dist <- on %>% count(ship_days) %>% mutate(share = n / sum(n))
+plot_ly(dist, x = ~ship_days, y = ~share, type = "bar", marker = list(color = BLUE),
+        text = ~paste0(ship_days, " days<br>Orders ", comma(n), " (", pct(share), ")"),
+        hovertemplate = "%{text}<extra></extra>", textposition = "none") %>%
+  style(x = "Delivery Days", y = "Share of Orders", yfmt = ".0%")
+```
+
+```{r}
+#| title: "Avg. Delivery Days by Country"
+sc2 <- on %>% group_by(cust_ctry_lbl) %>%
+  summarise(days = mean(ship_days), n = n(), .groups = "drop")
+hbar(sc2, "cust_ctry_lbl", "days", xfmt = ".1f",
+     text = ~paste0(cust_ctry_lbl, "<br>Avg. ", round(days, 1), " days<br>Orders ", comma(n)))
+```
+
+# Data Notes
+
+## Row
+
+### Column {width=45%}
+
+::: {.card title="Methodology & Notes"}
+<div class="insight">
+
+- **Revenue** = Quantity × Unit Price USD; **Cost** = Quantity × Unit Cost USD; **Gross Profit** = Revenue − Cost. All amounts in USD.
+- Orders are counted as distinct Order Numbers; one order can contain several line items.
+- `r comma(nrow(d))` line items from `r format(min(d$order_date))` to `r format(last_day)`. `r year(last_day)` is partial, so annual charts show full years only.
+- **Delivery Date exists only for online orders** (`r comma(sum(!is.na(d$delivery_date)))` rows), so the Delivery page covers online orders only.
+- **Data repair**: `r comma(n_shifted)` rows (`r n_shift_cust` customers) had a corrupted character in the name that shifted customer fields one column right (continent in the country field, blank birthday). They are shifted back on load; the city merged into the name and is set to blank.
+- Age = order date − birthday.
+- The online store has no floor area, so revenue per m² covers physical stores only.
+
+</div>
+:::
+
+### Column {width=55%}
+
+```{r}
+#| title: "Data Dictionary"
+read_excel(params$dict_path) %>%
+  datatable(rownames = FALSE, colnames = c("Table", "Field", "Description"),
+            options = list(pageLength = 15, dom = "ftp"))
+```
