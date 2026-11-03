@@ -1,0 +1,20 @@
+<script>
+  // 以 JS 載入 Google Fonts（Noto Sans TC），避免 self_contained 打包時抓取外部資源
+  (function(){var l=document.createElement('link');l.rel='stylesheet';
+  l.href='https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap';
+  document.head.appendChild(l);})();
+</script>
+<style>
+  :root { color-scheme: light; }
+  body { background: #f4f3f0; color: #0b0b0b; }
+  .chart-wrapper, .value-box { background: #ffffff; border: 1px solid #e3e2de; border-radius: 10px; box-shadow: none; }
+  .chart-title { font-weight: 600; font-size: 14px; color: #0b0b0b; border-bottom: 1px solid #efeee9; }
+  .value-box { color: #0b0b0b !important; }
+  .value-box .value { font-size: 28px; font-weight: 700; color: #0b0b0b; font-variant-numeric: tabular-nums; }
+  .value-box .caption { color: #52514e; font-size: 13px; }
+  .value-box .icon i { color: #2a78d6; opacity: .18; }
+  .insight { padding: 6px 14px; font-size: 14px; line-height: 1.75; color: #2b2a28; }
+  .insight ul { padding-left: 18px; margin: 0; }
+  .insight li { margin-bottom: 8px; }
+  table.dataTable { font-size: 13px; }
+</style>
