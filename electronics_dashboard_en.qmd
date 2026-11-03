@@ -473,32 +473,3 @@ sc2 <- on %>% group_by(cust_ctry_lbl) %>%
 hbar(sc2, "cust_ctry_lbl", "days", xfmt = ".1f",
      text = ~paste0(cust_ctry_lbl, "<br>Avg. ", round(days, 1), " days<br>Orders ", comma(n)))
 ```
-
-# Data Notes
-
-## Row
-
-### Column {width=45%}
-
-::: {.card title="Methodology & Notes"}
-<div class="insight">
-
-- **Revenue** = Quantity × Unit Price USD; **Cost** = Quantity × Unit Cost USD; **Gross Profit** = Revenue − Cost. All amounts in USD.
-- Orders are counted as distinct Order Numbers; one order can contain several line items.
-- `r comma(nrow(d))` line items from `r format(min(d$order_date))` to `r format(last_day)`. `r year(last_day)` is partial, so annual charts show full years only.
-- **Delivery Date exists only for online orders** (`r comma(sum(!is.na(d$delivery_date)))` rows), so the Delivery page covers online orders only.
-- **Data repair**: `r comma(n_shifted)` rows (`r n_shift_cust` customers) had a corrupted character in the name that shifted customer fields one column right (continent in the country field, blank birthday). They are shifted back on load; the city merged into the name and is set to blank.
-- Age = order date − birthday.
-- The online store has no floor area, so revenue per m² covers physical stores only.
-
-</div>
-:::
-
-### Column {width=55%}
-
-```{r}
-#| title: "Data Dictionary"
-read_excel(params$dict_path) %>%
-  datatable(rownames = FALSE, colnames = c("Table", "Field", "Description"),
-            options = list(pageLength = 15, dom = "ftp"))
-```
